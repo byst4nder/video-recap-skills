@@ -137,6 +137,191 @@ def _normalise_narration_segment(seg, scenes_analysis=None):
     return item
 
 
+def _lint_issue(level, index, code, message, **extra):
+    issue = {"level": level, "index": index, "code": code, "message": message}
+    issue.update(extra)
+    return issue
+
+
+def _scene_bounds_for_midpoint(scenes_analysis, start, end):
+    scene = _find_scene_for_midpoint(scenes_analysis or [], start, end)
+    if not scene:
+        return None
+    return float(scene.get("start", 0)), float(scene.get("end", 0))
+
+
+def _clip_matches_for_segment(seg, clip_plan):
+    if not clip_plan:
+        return []
+    clips = clip_plan.get("clips", clip_plan) if isinstance(clip_plan, dict) else clip_plan
+    if not isinstance(clips, list):
+        return []
+    try:
+        start = float(seg.get("start"))
+        end = float(seg.get("end"))
+    except (TypeError, ValueError):
+        return []
+    midpoint = (start + end) / 2
+    if seg.get("source_clip_id") is not None:
+        try:
+            requested = int(seg.get("source_clip_id"))
+        except (TypeError, ValueError):
+            return []
+        return [
+            clip for clip in clips
+            if clip.get("clip_id") == requested
+            and float(clip.get("source_start", clip.get("start", 0)))
+            <= midpoint
+            <= float(clip.get("source_end", clip.get("end", 0)))
+        ]
+    return [
+        clip for clip in clips
+        if float(clip.get("source_start", clip.get("start", 0)))
+        <= midpoint
+        <= float(clip.get("source_end", clip.get("end", 0)))
+    ]
+
+
+def lint_narration(narration, scenes_analysis=None, *, clip_plan=None, mode="full", work_dir=None):
+    """Preflight-check agent narration before TTS; write narration_lint.json when work_dir is set."""
+    errors = []
+    warnings = []
+    normalized = []
+    if not isinstance(narration, list):
+        errors.append(_lint_issue("error", None, "invalid_json_shape", "narration.json must be a JSON array"))
+    else:
+        for idx, seg in enumerate(narration):
+            if not isinstance(seg, dict):
+                errors.append(_lint_issue("error", idx, "invalid_segment", "Narration segment must be an object"))
+                continue
+            try:
+                start = float(seg.get("start"))
+                end = float(seg.get("end"))
+            except (TypeError, ValueError):
+                errors.append(_lint_issue("error", idx, "invalid_time", "start/end must be numeric"))
+                continue
+            text = str(seg.get("narration", "")).strip()
+            pause_raw = seg.get("pause_after_ms", CONFIG.get("breath_ms", 600))
+            try:
+                pause = int(pause_raw)
+            except (TypeError, ValueError):
+                pause = CONFIG.get("breath_ms", 600)
+                warnings.append(_lint_issue(
+                    "warning", idx, "invalid_pause",
+                    "pause_after_ms is invalid; default will be used",
+                ))
+            if pause < 0:
+                warnings.append(_lint_issue(
+                    "warning", idx, "negative_pause",
+                    "pause_after_ms is negative; default should be used",
+                    pause_after_ms=pause,
+                ))
+            if end <= start:
+                errors.append(_lint_issue(
+                    "error", idx, "invalid_time_range",
+                    "end must be greater than start", start=start, end=end,
+                ))
+                continue
+            if not text:
+                errors.append(_lint_issue(
+                    "error", idx, "empty_narration",
+                    "narration text must not be empty", start=start, end=end,
+                ))
+                continue
+
+            char_count = _text_char_count(text)
+            budget = _recommended_char_budget(start, end, pause)
+            estimated_tts_seconds = char_count / max(CONFIG.get("speech_rate", 3.5), 0.1)
+            slot_seconds = _scene_available_seconds(start, end, pause)
+            if budget < 5:
+                warnings.append(_lint_issue(
+                    "warning", idx, "slot_too_short",
+                    "Narration slot is very short; TTS may be clipped",
+                    start=start, end=end, budget_chars=budget,
+                ))
+            elif char_count > budget:
+                warnings.append(_lint_issue(
+                    "warning", idx, "over_budget", "Text may exceed the available TTS slot",
+                    start=start, end=end, budget_chars=budget, actual_chars=char_count,
+                    estimated_tts_seconds=round(estimated_tts_seconds, 2), slot_seconds=round(slot_seconds, 2),
+                ))
+            if text[-1] not in "。！？!?…":
+                warnings.append(_lint_issue(
+                    "warning", idx, "incomplete_sentence",
+                    "Narration should end with a complete sentence punctuation",
+                    text_tail=text[-8:],
+                ))
+
+            scene_bounds = _scene_bounds_for_midpoint(scenes_analysis, start, end)
+            if scenes_analysis and not scene_bounds:
+                warnings.append(_lint_issue(
+                    "warning", idx, "outside_scene",
+                    "Narration midpoint does not match any detected scene",
+                    start=start, end=end,
+                ))
+            elif scene_bounds and (start < scene_bounds[0] or end > scene_bounds[1]):
+                warnings.append(_lint_issue(
+                    "warning", idx, "crosses_scene_boundary", "Narration extends outside its midpoint scene boundary",
+                    start=start, end=end, scene_start=scene_bounds[0], scene_end=scene_bounds[1],
+                ))
+
+            if mode == "cut":
+                matches = _clip_matches_for_segment(seg, clip_plan)
+                if not matches:
+                    errors.append(_lint_issue(
+                        "error", idx, "outside_clip_plan",
+                        "Cut-mode narration must fall inside a selected clip",
+                        start=start, end=end,
+                    ))
+                elif len(matches) > 1 and seg.get("source_clip_id") is None:
+                    errors.append(_lint_issue(
+                        "error", idx, "ambiguous_source_clip",
+                        "Repeated/overlapping clips require source_clip_id",
+                        start=start, end=end,
+                    ))
+                if seg.get("source_clip_id") is not None:
+                    try:
+                        int(seg.get("source_clip_id"))
+                    except (TypeError, ValueError):
+                        errors.append(_lint_issue("error", idx, "invalid_source_clip_id", "source_clip_id must be an integer"))
+
+            normalized.append({"index": idx, "start": start, "end": end, "char_count": char_count})
+
+    sorted_segments = sorted(normalized, key=lambda item: item["start"])
+    for prev, curr in zip(sorted_segments, sorted_segments[1:]):
+        if curr["start"] < prev["end"]:
+            errors.append(_lint_issue(
+                "error", curr["index"], "time_overlap", "Segment overlaps the previous narration segment",
+                previous_index=prev["index"], previous_end=prev["end"], start=curr["start"], end=curr["end"],
+            ))
+
+    report = {
+        "ok": not errors,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "errors": errors,
+        "warnings": warnings,
+    }
+    if work_dir is not None:
+        import json
+        Path(work_dir, "narration_lint.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return report
+
+
+def validate_narration_or_raise(narration, scenes_analysis=None, *, clip_plan=None, mode="full", work_dir=None):
+    report = lint_narration(narration, scenes_analysis, clip_plan=clip_plan, mode=mode, work_dir=work_dir)
+    if report["errors"]:
+        sample = "; ".join(f"#{e.get('index')}: {e['code']}" for e in report["errors"][:3])
+        raise ValueError(f"narration.json 预检失败: {sample}; 详见 narration_lint.json")
+    if report["warnings"]:
+        log(f"narration lint: {len(report['warnings'])} warnings (see narration_lint.json)")
+    else:
+        log("narration lint: ok")
+    return report
+
+
 def _validate_narration_budget(narration, scenes_analysis):
     """Validate agent-written narration against timing budgets; trim impossible text safely."""
     if not isinstance(narration, list):

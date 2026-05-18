@@ -124,6 +124,8 @@ python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
 
 The command pauses before TTS and prints a `work_dir`. Read `work_dir/agent_narration_brief.md`, write `work_dir/narration.json`, then run the printed resume command.
 
+To validate the agent-written script before TTS, run `--step script` after writing `narration.json`. This writes `work_dir/narration_lint.json` with timing errors and warnings.
+
 For an edited recap that keeps only selected source moments (target duration is a planning goal):
 
 ```bash
@@ -151,7 +153,7 @@ The CLI exports `subtitles.srt` from the final `narration.json` and TTS placemen
 python3 skills/video-recap/scripts/video_recap.py --doctor
 ```
 
-Use `--doctor-tts-smoke` when you also want a short `edge-tts` synthesis check.
+Use `--doctor-tts-smoke` when you also want a short `edge-tts` synthesis check. The doctor also reports ffmpeg subtitle-filter support, ASR path/model readiness, normalized API configuration, and the default TTS setup.
 
 ## Output
 
@@ -162,6 +164,7 @@ Typical outputs:
 - `work_dir/subtitles.ass` — internal narration subtitle file used for burn-in when `--burn-subtitles` is enabled
 - `work_dir/agent_narration_brief.md` — timing and scene brief for the agent
 - `work_dir/narration.json` — recap narration script
+- `work_dir/narration_lint.json` — script timing/preflight diagnostics from `--step script` or resume validation
 - `work_dir/clip_plan.json` — source ranges to keep when `--edit-mode cut` is used
 - `work_dir/edited_source.mp4` — concatenated short source video in cut mode
 - `work_dir/narration_mapped.json` — narration mapped from source time to edited-output time

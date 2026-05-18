@@ -15,7 +15,7 @@
 | `--resume` | 从已有工作目录继续 | - | 写好 `narration.json` 后续跑 |
 | `--burn-subtitles` | 压制解说字幕到视频（需重编码） | false | 需要内嵌字幕时开启；仍会导出 `subtitles.srt`；要求 ffmpeg 带 `subtitles`/libass 滤镜 |
 | `--output, -o` | 输出目录 | 视频所在目录/output | 自定义输出位置 |
-| `--step` | 仅执行: extract / detect / asr / analyze / script / tts / assemble | 全部 | 调试单步或重跑特定阶段；script 只验证已有 `narration.json` |
+| `--step` | 仅执行: extract / detect / asr / analyze / script / tts / assemble | 全部 | 调试单步或重跑特定阶段；script 会验证已有 `narration.json` 并写 `narration_lint.json` |
 | `--skip-asr` | 跳过 ASR 转录 | false | 无本地 ASR 或已有 `asr_result.json` 时使用 |
 | `--fps` | 帧提取 fps（0=自动：≤60s→2fps, ≤5min→1.5fps, >5min→1fps） | 0 | 视频细节多时可调高 |
 | `--ducking` | 音频 ducking 模式: sidechaincompress / fixed / none | 配置值 `ducking_mode`（当前 fixed） | 解说与原声重叠时的音量压低策略 |
@@ -27,7 +27,7 @@
 | `--target-duration` | cut 模式目标成片时长，如 `600` / `10m` / `00:10:00` | - | 作为选片规划目标；超出较多会警告 |
 | `--clip-padding` | cut 模式每个片段两端扩展秒数 | 0 | 片段切得太紧时加 0.5-1.0 |
 | `--allow-clip-overlap` | cut 模式允许重复/重叠使用原片 | false | 少数需要重复画面时开启；对应解说建议写 `source_clip_id` |
-| `--doctor` | 检查运行依赖和配置 | false | 首次安装或排查环境时使用 |
+| `--doctor` | 检查运行依赖和配置 | false | 首次安装或排查环境时使用；包含 ffmpeg 字幕滤镜、ASR、API、TTS 状态 |
 | `--doctor-tts-smoke` | doctor 时试合成一小段 edge-tts | false | 验证 TTS 网络/音色是否可用 |
 
 ## 环境变量

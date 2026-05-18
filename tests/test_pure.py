@@ -25,7 +25,7 @@ from edit import (
     parse_duration_seconds,
     source_time_to_output_time,
 )
-from narration import _text_char_count
+from narration import _text_char_count, lint_narration
 from tts import _build_tts_segment_result, _detect_tts_engine, _parse_rate_offset, synthesize_tts
 from assemble import (
     _escape_ass_text,
@@ -186,6 +186,37 @@ def test_assembly_settings_fingerprint_tracks_burn_style(monkeypatch):
     assert burned["burn_subtitles"] is True
     assert burned["subtitle_renderer"] == "ass"
     assert bigger != burned
+
+
+def test_lint_narration_reports_warnings_and_errors(tmp_path, monkeypatch):
+    monkeypatch.setitem(CONFIG, "speech_rate", 3.5)
+    monkeypatch.setitem(CONFIG, "speech_safety_margin", 0.85)
+    report = lint_narration([
+        {"start": 0.0, "end": 3.0, "narration": "这是一段明显超过时间预算的很长很长解说文本。"},
+        {"start": 2.5, "end": 4.0, "narration": "第二段没有句号"},
+        {"start": 4.0, "end": 4.5, "narration": "太短。"},
+        {"start": 5.0, "end": 6.0, "narration": ""},
+    ], [{"scene_id": 0, "start": 0.0, "end": 6.0}], work_dir=tmp_path)
+
+    assert report["ok"] is False
+    codes = {issue["code"] for issue in report["errors"] + report["warnings"]}
+    assert "over_budget" in codes
+    assert "time_overlap" in codes
+    assert "slot_too_short" in codes
+    assert "empty_narration" in codes
+    assert "incomplete_sentence" in codes
+    assert (tmp_path / "narration_lint.json").exists()
+
+
+def test_lint_narration_cut_mode_requires_clip_membership():
+    plan = {"clips": [{"clip_id": 0, "source_start": 10.0, "source_end": 20.0}]}
+    report = lint_narration([
+        {"start": 11.0, "end": 15.0, "narration": "片段内解说。"},
+        {"start": 22.0, "end": 24.0, "narration": "片段外解说。"},
+    ], [{"scene_id": 0, "start": 0.0, "end": 30.0}], clip_plan=plan, mode="cut")
+
+    assert report["ok"] is False
+    assert any(issue["code"] == "outside_clip_plan" for issue in report["errors"])
 
 
 def test_get_video_duration_returns_zero_for_unparseable_output(monkeypatch):
@@ -739,6 +770,62 @@ def test_cut_artifacts_rebuild_when_source_files_change(monkeypatch, tmp_path):
     time.sleep(0.01)
     paths["narration.json"].write_text("[]")
     assert not _cut_artifacts_current(work_dir)
+
+
+def test_step_script_writes_narration_lint_and_stops_before_tts(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    for step in ("extract", "detect", "asr", "silence", "vlm"):
+        (work_dir / f".step_{step}.done").write_text("ok")
+    (work_dir / "scenes.json").write_text('[{"scene_id":0,"start":0.0,"end":6.0,"description":"测试场景"}]')
+    (work_dir / "asr_result.json").write_text('[]')
+    (work_dir / "silence_periods.json").write_text('[{"start":0.0,"end":6.0,"duration":6.0,"has_speech":false}]')
+    (work_dir / "vlm_analysis.json").write_text('[{"scene_id":0,"start":0.0,"end":6.0,"description":"测试场景"}]')
+    (work_dir / "narration.json").write_text('[{"start":0.5,"end":5.5,"narration":"他终于意识到，沉默比争吵更伤人。"}]')
+
+    monkeypatch.setitem(CONFIG, "api_key", "")
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 6.0)
+    monkeypatch.setattr("pipeline.synthesize_tts", lambda narration, wd: (_ for _ in ()).throw(AssertionError("TTS should not run for --step script")))
+
+    result = run_pipeline(video, resume_dir=work_dir, step="script")
+
+    assert result["status"] == "script_validated"
+    assert (work_dir / "narration_lint.json").exists()
+    assert (work_dir / ".step_script.done").exists()
+    assert not (work_dir / ".step_tts.done").exists()
+
+
+def test_step_script_fails_on_lint_errors(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    for step in ("extract", "detect", "asr", "silence", "vlm"):
+        (work_dir / f".step_{step}.done").write_text("ok")
+    (work_dir / "scenes.json").write_text('[{"scene_id":0,"start":0.0,"end":6.0,"description":"测试场景"}]')
+    (work_dir / "asr_result.json").write_text('[]')
+    (work_dir / "silence_periods.json").write_text('[]')
+    (work_dir / "vlm_analysis.json").write_text('[{"scene_id":0,"start":0.0,"end":6.0,"description":"测试场景"}]')
+    (work_dir / "narration.json").write_text('[{"start":0.5,"end":1.5,"narration":""}]')
+
+    monkeypatch.setitem(CONFIG, "api_key", "")
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 6.0)
+
+    with pytest.raises(ValueError, match="narration.json 预检失败"):
+        run_pipeline(video, resume_dir=work_dir, step="script")
+
+    assert (work_dir / "narration_lint.json").exists()
+    assert not (work_dir / ".step_script.done").exists()
 
 
 def test_resume_cut_mode_maps_narration_and_assembles_edited_source(monkeypatch, tmp_path):

@@ -124,6 +124,8 @@ python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
 
 命令会在 TTS 前暂停并输出 `work_dir`。读取 `work_dir/agent_narration_brief.md`，写入 `work_dir/narration.json` 后，再执行打印出的续跑命令。
 
+写完 `narration.json` 后，可以先用 `--step script` 做 TTS 前预检；CLI 会写出 `work_dir/narration_lint.json`，列出时间错误和预警。
+
 如果要做“长视频剪短”的剪辑式解说（目标时长是选片规划目标）：
 
 ```bash
@@ -151,7 +153,7 @@ CLI 会根据最终 `narration.json` 和 TTS 实际放置时间导出 `subtitles
 python3 skills/video-recap/scripts/video_recap.py --doctor
 ```
 
-如果还想测试 `edge-tts` 能否真实合成一小段音频，加 `--doctor-tts-smoke`。
+如果还想测试 `edge-tts` 能否真实合成一小段音频，加 `--doctor-tts-smoke`。doctor 也会检查 ffmpeg 字幕滤镜、ASR 路径和模型目录、规范化后的 API 配置，以及默认 TTS 设置。
 
 ## 输出文件
 
@@ -162,6 +164,7 @@ python3 skills/video-recap/scripts/video_recap.py --doctor
 - `work_dir/subtitles.ass`：使用 `--burn-subtitles` 时用于压制的解说字幕文件
 - `work_dir/agent_narration_brief.md`：给 Agent 写解说词用的场景与时长 brief
 - `work_dir/narration.json`：解说词稿
+- `work_dir/narration_lint.json`：`--step script` 或续跑验证时生成的写稿时间预检结果
 - `work_dir/clip_plan.json`：cut 模式下要保留的原片片段
 - `work_dir/edited_source.mp4`：cut 模式下拼出的短视频源
 - `work_dir/narration_mapped.json`：从原视频时间映射到短视频时间的解说稿

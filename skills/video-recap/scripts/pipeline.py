@@ -14,6 +14,7 @@ from asr import transcribe_audio
 from vlm import analyze_scenes, analyze_narrative_structure
 from narration import (
     build_agent_brief,
+    validate_narration_or_raise,
     _validate_narration_budget,
     _align_narration_to_quiet,
 )
@@ -420,14 +421,18 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
     if CONFIG["fps"] <= 0:
         CONFIG["fps"] = 2 if video_duration <= 60 else (1.5 if video_duration <= 300 else 1)
 
+    stop_after_script = False
     if step:
         if step in ("extract", "detect", "asr"):
             result = steps[step]()
             log(f"步骤 {step} 完成")
             return result
-        cached_result = _run_cached_tail_step(video_path, work_dir, step, style, output_dir)
-        if cached_result is not None:
-            return cached_result
+        if step in ("tts", "assemble"):
+            cached_result = _run_cached_tail_step(video_path, work_dir, step, style, output_dir)
+            if cached_result is not None:
+                return cached_result
+        elif step == "script":
+            stop_after_script = True
         else:
             log(f"步骤 {step} 需要完整 pipeline，自动运行全部步骤")
 
@@ -540,17 +545,46 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
 
     if _is_step_done(work_dir, "script"):
         source_narration = _load_json_file(narration_path, "narration.json")
+        clip_plan_for_lint = None
+        if cut_mode and (work_dir / "clip_plan_validated.json").exists():
+            clip_plan_for_lint = _load_json_file(work_dir / "clip_plan_validated.json", "clip_plan_validated.json")
+        elif cut_mode and clip_plan_path.exists():
+            clip_plan_for_lint = _load_json_file(clip_plan_path, "clip_plan.json")
+        validate_narration_or_raise(
+            source_narration, vlm_analysis, clip_plan=clip_plan_for_lint,
+            mode=CONFIG.get("edit_mode", "full"), work_dir=work_dir,
+        )
         source_narration = _validate_narration_budget(source_narration, vlm_analysis)
         log(f"跳过解说词写作（已存在 {len(source_narration)} 段）")
     elif required_ready:
         source_narration = _load_json_file(narration_path, "narration.json")
+        clip_plan_for_lint = None
+        if cut_mode:
+            raw_plan_for_lint = load_clip_plan(clip_plan_path)
+            clip_plan_for_lint = normalize_clip_plan(
+                raw_plan_for_lint, video_duration,
+                target_duration=_target_duration_seconds(),
+                clip_padding=CONFIG.get("clip_padding", 0.0),
+                allow_overlap=bool(CONFIG.get("allow_clip_overlap", False)),
+            )
+        validate_narration_or_raise(
+            source_narration, vlm_analysis, clip_plan=clip_plan_for_lint,
+            mode=CONFIG.get("edit_mode", "full"), work_dir=work_dir,
+        )
         source_narration = _validate_narration_budget(source_narration, vlm_analysis)
         if not cut_mode:
             source_narration = _align_narration_to_quiet(source_narration, vlm_analysis, silence_periods)
             narration_path.write_text(json.dumps(source_narration, ensure_ascii=False, indent=2), encoding="utf-8")
         _step_done(work_dir, "script")
         log(f"Agent 解说词验证完成: {len(source_narration)} 段")
-    else:
+    if stop_after_script and source_narration is not None:
+        return {
+            "status": "script_validated",
+            "work_dir": str(work_dir),
+            "narration_segments": len(source_narration),
+            "lint": str(work_dir / "narration_lint.json"),
+        }
+    elif source_narration is None:
         brief_path = build_agent_brief(vlm_analysis, asr_result, silence_periods, video_duration, work_dir, style)
         log("=" * 50)
         log("⏸  Pipeline 在解说词步骤暂停")
