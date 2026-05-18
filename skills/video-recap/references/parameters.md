@@ -13,7 +13,7 @@
 | `--voice` | 覆盖 edge-tts 音色 | `zh-CN-YunxiNeural` | 不满意默认音色时指定 |
 | `--scene-threshold` | 场景检测阈值 0.0-1.0 | 0.1 | 场景切碎→调低；场景漏检→调高 |
 | `--resume` | 从已有工作目录继续 | - | 写好 `narration.json` 后续跑 |
-| `--burn-subtitles` | 烧录字幕到视频（需重编码） | false | 需要内嵌字幕时开启 |
+| `--burn-subtitles` | 压制解说字幕到视频（需重编码） | false | 需要内嵌字幕时开启；仍会导出 `subtitles.srt`；要求 ffmpeg 带 `subtitles`/libass 滤镜 |
 | `--output, -o` | 输出目录 | 视频所在目录/output | 自定义输出位置 |
 | `--step` | 仅执行: extract / detect / asr / analyze / script / tts / assemble | 全部 | 调试单步或重跑特定阶段；script 只验证已有 `narration.json` |
 | `--skip-asr` | 跳过 ASR 转录 | false | 无本地 ASR 或已有 `asr_result.json` 时使用 |
@@ -49,3 +49,7 @@
 | `CLIP_PADDING` | cut 模式默认片段 padding 秒数 | 0 | 例如 `0.5` |
 | `ALLOW_CLIP_OVERLAP` | cut 模式是否允许重复/重叠使用原片 | false | 重复画面需要明确映射时设为 1 |
 | `FORCE_VIDEO_REENCODE` | 组装阶段是否强制重编码视频 | false | 输出容器时间戳异常时设为 1 |
+| `SUBTITLE_FONT_NAME` | 压制字幕字体名 | Arial | 需要指定本机字体时调整 |
+| `SUBTITLE_FONT_SIZE` | 压制字幕字号 | 42 | 字幕过大/过小时调整 |
+| `SUBTITLE_MARGIN_V` | 压制字幕底部边距 | 48 | 字幕位置太低/太高时调整 |
+| `SUBTITLE_MAX_CHARS` | 字幕单行换行字数 | 20 | 字幕过长时调小 |

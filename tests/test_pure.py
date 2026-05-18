@@ -11,7 +11,13 @@ from common import _retry_after_seconds, get_video_duration
 from config import CONFIG, env_bool, env_float, env_int, normalize_api_url
 from detect import detect_scenes
 from extract import extract_frames
-from pipeline import _annotate_cut_narration_overlap, _command_available, run_pipeline
+from pipeline import (
+    _annotate_cut_narration_overlap,
+    _assemble_settings_current,
+    _command_available,
+    _ffmpeg_has_filter,
+    run_pipeline,
+)
 from edit import (
     build_edited_source_video,
     map_narration_to_clips,
@@ -21,7 +27,16 @@ from edit import (
 )
 from narration import _text_char_count
 from tts import _build_tts_segment_result, _detect_tts_engine, _parse_rate_offset, synthesize_tts
-from assemble import _seconds_to_srt_time
+from assemble import (
+    _escape_ass_text,
+    _generate_ass,
+    _generate_srt,
+    _seconds_to_ass_time,
+    _seconds_to_srt_time,
+    _subtitle_burn_filter,
+    assembly_settings_fingerprint,
+    assemble_video,
+)
 from vlm import analyze_scenes
 
 
@@ -44,6 +59,133 @@ def test_seconds_to_srt_time():
     assert result.startswith("01:01:01")
     # 0s
     assert _seconds_to_srt_time(0) == "00:00:00,000"
+
+
+def test_seconds_to_ass_time():
+    assert _seconds_to_ass_time(3661.5) == "1:01:01.50"
+    assert _seconds_to_ass_time(0) == "0:00:00.00"
+
+
+def test_generate_srt_uses_actual_placement(tmp_path):
+    _generate_srt([
+        {"start": 0.0, "end": 2.0, "actual_place_start": 0.5, "actual_place_end": 1.7, "narration": "真实放置时间。"},
+        {"start": 3.0, "end": 3.05, "narration": "过短跳过。"},
+    ], tmp_path)
+
+    srt = (tmp_path / "subtitles.srt").read_text(encoding="utf-8")
+    assert "00:00:00,500 --> 00:00:01,700" in srt
+    assert "真实放置时间" in srt
+    assert "过短跳过" not in srt
+
+
+def test_generate_ass_escapes_text_and_writes_style(tmp_path):
+    _generate_ass([
+        {
+            "start": 1.0,
+            "end": 4.0,
+            "actual_place_start": 1.25,
+            "actual_place_end": 3.5,
+            "narration": "第一行{重点}\\路径\n第二行",
+        }
+    ], tmp_path)
+
+    ass = (tmp_path / "subtitles.ass").read_text(encoding="utf-8")
+    assert "[V4+ Styles]" in ass
+    assert "Style: Default" in ass
+    assert "Dialogue: 0,0:00:01.25,0:00:03.50" in ass
+    assert r"第一行\{重点\}\\路径\N第二行" in ass
+    assert _escape_ass_text("{x}\\y") == r"\{x\}\\y"
+
+
+def test_subtitle_burn_filter_escapes_path():
+    path = Path("/tmp/video recap/a:b,c[1].ass")
+    filt = _subtitle_burn_filter(path)
+    assert filt.startswith("subtitles=")
+    assert "video recap" in filt
+    assert r"a\:b\,c\[1\].ass" in filt
+
+
+def test_assemble_video_burns_ass_subtitles(monkeypatch, tmp_path):
+    video = tmp_path / "input.mp4"
+    video.write_bytes(b"video")
+    wav = tmp_path / "narr.wav"
+    wav.write_bytes(b"wav")
+    output = tmp_path / "output.mp4"
+    commands = []
+
+    def fake_run_cmd(cmd):
+        commands.append(cmd)
+        output.write_bytes(b"mp4")
+        return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    monkeypatch.setattr("assemble.get_video_duration", lambda path: 4.0)
+    monkeypatch.setattr("assemble._build_timed_narration", lambda segments, out, duration, wd: Path(out).write_bytes(b"narration"))
+    monkeypatch.setattr("assemble.run_cmd", fake_run_cmd)
+
+    assemble_video(video, [{
+        "start": 0.0,
+        "end": 3.0,
+        "actual_place_start": 0.2,
+        "actual_place_end": 2.5,
+        "narration": "压制字幕。",
+        "audio_path": str(wav),
+        "audio_duration": 1.0,
+    }], tmp_path, output)
+
+    ffmpeg_cmd = commands[-1]
+    assert (tmp_path / "subtitles.srt").exists()
+    assert (tmp_path / "subtitles.ass").exists()
+    assert "-vf" in ffmpeg_cmd
+    assert any(str(arg).startswith("subtitles=") for arg in ffmpeg_cmd)
+    assert "-c:v" in ffmpeg_cmd
+    assert "libx264" in ffmpeg_cmd
+
+
+def test_assemble_video_without_burn_keeps_video_copy(monkeypatch, tmp_path):
+    video = tmp_path / "input.mp4"
+    video.write_bytes(b"video")
+    output = tmp_path / "output.mp4"
+    commands = []
+
+    def fake_run_cmd(cmd):
+        commands.append(cmd)
+        output.write_bytes(b"mp4")
+        return CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    monkeypatch.setitem(CONFIG, "force_video_reencode", False)
+    monkeypatch.setattr("assemble.get_video_duration", lambda path: 4.0)
+    monkeypatch.setattr("assemble._build_timed_narration", lambda segments, out, duration, wd: Path(out).write_bytes(b"narration"))
+    monkeypatch.setattr("assemble.run_cmd", fake_run_cmd)
+
+    assemble_video(video, [{
+        "start": 0.0,
+        "end": 3.0,
+        "narration": "外挂字幕仍生成。",
+        "audio_path": str(tmp_path / "narr.wav"),
+        "audio_duration": 1.0,
+    }], tmp_path, output)
+
+    ffmpeg_cmd = commands[-1]
+    assert (tmp_path / "subtitles.srt").exists()
+    assert not (tmp_path / "subtitles.ass").exists()
+    assert "-vf" not in ffmpeg_cmd
+    assert ffmpeg_cmd[ffmpeg_cmd.index("-c:v") + 1] == "copy"
+
+
+def test_assembly_settings_fingerprint_tracks_burn_style(monkeypatch):
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    plain = assembly_settings_fingerprint()
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    burned = assembly_settings_fingerprint()
+    monkeypatch.setitem(CONFIG, "subtitle_font_size", 50)
+    bigger = assembly_settings_fingerprint()
+
+    assert plain["burn_subtitles"] is False
+    assert burned["burn_subtitles"] is True
+    assert burned["subtitle_renderer"] == "ass"
+    assert bigger != burned
 
 
 def test_get_video_duration_returns_zero_for_unparseable_output(monkeypatch):
@@ -297,6 +439,15 @@ def test_command_available_checks_path_and_executable_name(tmp_path, monkeypatch
     assert not _command_available("missing-command")
 
 
+def test_ffmpeg_has_filter_parses_filter_table(monkeypatch):
+    def fake_run_cmd(cmd):
+        return CompletedProcess(cmd, 0, stdout=" T.C subtitles        V->V       Render text subtitles\n", stderr="")
+
+    monkeypatch.setattr("pipeline.run_cmd", fake_run_cmd)
+    assert _ffmpeg_has_filter("subtitles") is True
+    assert _ffmpeg_has_filter("missing") is False
+
+
 def test_step_tts_runs_from_cached_narration_without_api(monkeypatch, tmp_path):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"fake")
@@ -309,6 +460,7 @@ def test_step_tts_runs_from_cached_narration_without_api(monkeypatch, tmp_path):
 
     monkeypatch.setitem(CONFIG, "api_key", "")
     monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
     monkeypatch.setattr("pipeline.get_video_duration", lambda path: 3.0)
     monkeypatch.setattr("pipeline.api_call", lambda payload: (_ for _ in ()).throw(AssertionError("API should not be called")))
@@ -336,6 +488,7 @@ def test_full_pipeline_pauses_for_agent_brief_without_script_api(monkeypatch, tm
 
     monkeypatch.setitem(CONFIG, "api_key", "test-key")
     monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
     monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
     monkeypatch.setattr("pipeline.get_video_duration", lambda path: 8.0)
@@ -380,6 +533,7 @@ def test_resume_validates_existing_agent_narration_without_api(monkeypatch, tmp_
 
     monkeypatch.setitem(CONFIG, "api_key", "")
     monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
     monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
     monkeypatch.setattr("pipeline.get_video_duration", lambda path: 6.0)
@@ -401,6 +555,22 @@ def test_resume_validates_existing_agent_narration_without_api(monkeypatch, tmp_
     assert (work_dir / "output.mp4").exists()
 
 
+def test_assemble_metadata_invalidates_when_burn_setting_changes(monkeypatch, tmp_path):
+    import pipeline
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    pipeline._write_assemble_meta(work_dir, video)
+    assert _assemble_settings_current(work_dir, video)
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    assert not _assemble_settings_current(work_dir, video)
+
+
 def test_run_settings_persist_and_restore_cut_mode(monkeypatch, tmp_path):
     import pipeline
     from pipeline import _load_run_settings, _persist_run_settings, _resume_command
@@ -409,18 +579,21 @@ def test_run_settings_persist_and_restore_cut_mode(monkeypatch, tmp_path):
     monkeypatch.setitem(CONFIG, "target_duration", "10m")
     monkeypatch.setitem(CONFIG, "clip_padding", 0.5)
     monkeypatch.setitem(CONFIG, "allow_clip_overlap", True)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
     _persist_run_settings(tmp_path)
 
     monkeypatch.setitem(CONFIG, "edit_mode", "full")
     monkeypatch.setitem(CONFIG, "target_duration", "")
     monkeypatch.setitem(CONFIG, "clip_padding", 0.0)
     monkeypatch.setitem(CONFIG, "allow_clip_overlap", False)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     _load_run_settings(tmp_path)
 
     assert CONFIG["edit_mode"] == "cut"
     assert CONFIG["target_duration"] == "10m"
     assert CONFIG["clip_padding"] == 0.5
     assert CONFIG["allow_clip_overlap"] is True
+    assert CONFIG["burn_subtitles"] is True
     cmd = _resume_command(Path("video recap.py"), Path("input video.mp4"), tmp_path)
     assert "'video recap.py'" in cmd
     assert "'input video.mp4'" in cmd
@@ -428,6 +601,7 @@ def test_run_settings_persist_and_restore_cut_mode(monkeypatch, tmp_path):
     assert "--target-duration 10m" in cmd
     assert "--clip-padding 0.5" in cmd
     assert "--allow-clip-overlap" in cmd
+    assert "--burn-subtitles" in cmd
 
     # Simulate a fresh-process resume: persisted settings restore cut mode
     # before tail-step artifact generation.
@@ -439,6 +613,7 @@ def test_run_settings_persist_and_restore_cut_mode(monkeypatch, tmp_path):
     monkeypatch.setitem(CONFIG, "target_duration", "")
     monkeypatch.setitem(CONFIG, "clip_padding", 0.0)
     monkeypatch.setitem(CONFIG, "allow_clip_overlap", False)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setattr("pipeline.get_video_duration", lambda path: 3.0)
     monkeypatch.setattr("pipeline.build_edited_source_video", lambda video_path, plan, wd, output_path=None: Path(output_path or wd / "edited_source.mp4").write_bytes(b"edited") or Path(output_path or wd / "edited_source.mp4"))
     pipeline._load_run_settings(tmp_path)
@@ -453,6 +628,7 @@ def test_full_pipeline_cut_mode_pauses_for_clip_plan_and_narration(monkeypatch, 
 
     monkeypatch.setitem(CONFIG, "api_key", "test-key")
     monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
     monkeypatch.setitem(CONFIG, "edit_mode", "cut")
     monkeypatch.setitem(CONFIG, "target_duration", "4s")
@@ -479,6 +655,70 @@ def test_full_pipeline_cut_mode_pauses_for_clip_plan_and_narration(monkeypatch, 
     brief = (work_dir / "agent_narration_brief.md").read_text(encoding="utf-8")
     assert "clip_plan.json" in brief
     assert "ORIGINAL source timestamps" in brief
+
+
+def test_pause_resume_command_preserves_burn_subtitles(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+
+    monkeypatch.setitem(CONFIG, "api_key", "test-key")
+    monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline._ffmpeg_has_filter", lambda filter_name: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 4.0)
+    monkeypatch.setattr("pipeline.api_call", lambda payload: {"choices": [{"message": {"content": "ok"}}]})
+    monkeypatch.setattr("pipeline.extract_frames", lambda video_path, work_dir: [work_dir / "frames" / "frame_00001.jpg"])
+    monkeypatch.setattr("pipeline.detect_scenes", lambda video_path, work_dir, threshold: [{"start": 0.0, "end": 4.0}])
+    monkeypatch.setattr("pipeline.transcribe_audio", lambda video_path, work_dir: [])
+    monkeypatch.setattr("pipeline.detect_silence_periods", lambda video_path, work_dir, asr: [{"start": 0.0, "end": 4.0, "duration": 4.0, "has_speech": False}])
+    monkeypatch.setattr("pipeline.analyze_scenes", lambda scenes, frames, work_dir: [{
+        "scene_id": 0,
+        "start": 0.0,
+        "end": 4.0,
+        "description": "测试场景。",
+    }])
+
+    result = run_pipeline(video, output_dir=tmp_path / "out")
+    work_dir = Path(result["work_dir"])
+    settings = (work_dir / "run_settings.json").read_text(encoding="utf-8")
+
+    assert result["status"] == "paused"
+    assert '"burn_subtitles": true' in settings
+    assert "--burn-subtitles" in result["resume_command"]
+
+
+def test_resume_cli_burn_subtitles_overrides_saved_false(monkeypatch, tmp_path):
+    import pipeline
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "run_settings.json").write_text('{"edit_mode":"full","burn_subtitles":false}')
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    pipeline._merge_run_settings(work_dir)
+
+    assert CONFIG["burn_subtitles"] is True
+
+
+def test_resume_persisted_burn_subtitles_preflight_runs_after_load(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "run_settings.json").write_text('{"edit_mode":"full","burn_subtitles":true}')
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    filter_checks = []
+    monkeypatch.setattr("pipeline._ffmpeg_has_filter", lambda filter_name: filter_checks.append(filter_name) or False)
+
+    with pytest.raises(RuntimeError, match="未启用 subtitles/libass"):
+        run_pipeline(video, resume_dir=work_dir, step="assemble")
+
+    assert filter_checks == ["subtitles"]
 
 
 def test_cut_artifacts_rebuild_when_source_files_change(monkeypatch, tmp_path):
@@ -517,6 +757,7 @@ def test_resume_cut_mode_maps_narration_and_assembles_edited_source(monkeypatch,
 
     monkeypatch.setitem(CONFIG, "api_key", "")
     monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
     monkeypatch.setitem(CONFIG, "edit_mode", "cut")
     monkeypatch.setitem(CONFIG, "target_duration", "4s")
@@ -591,6 +832,7 @@ def test_step_assemble_rebuilds_stale_tts_after_mapped_narration_changes(monkeyp
     mapped.write_text('[{"start":0.0,"end":2.0,"narration":"更新后的稿。"}]')
 
     monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
     monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
     monkeypatch.setattr("pipeline.get_video_duration", lambda path: 2.0)
     monkeypatch.setattr("pipeline.build_edited_source_video", lambda video_path, plan, wd, output_path=None: Path(output_path or wd / "edited_source.mp4").write_bytes(b"edited") or Path(output_path or wd / "edited_source.mp4"))
@@ -601,6 +843,70 @@ def test_step_assemble_rebuilds_stale_tts_after_mapped_narration_changes(monkeyp
     run_pipeline(video, resume_dir=work_dir, step="assemble")
 
     assert calls and calls[0][0]["narration"] == "更新后的稿。"
+
+
+def test_step_assemble_rebuilds_when_assemble_settings_change(monkeypatch, tmp_path):
+    import pipeline
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    output = work_dir / "output.mp4"
+    output.write_bytes(b"old")
+    (work_dir / ".step_assemble.done").write_text("ok")
+    tts_meta = work_dir / "tts_meta.json"
+    tts_meta.write_text('{"segments":[{"start":0,"end":2,"narration":"旧设置。","audio_path":"n.wav","audio_duration":1}],"engine":"say"}')
+
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    pipeline._write_assemble_meta(work_dir, video)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline._ffmpeg_has_filter", lambda filter_name: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 2.0)
+    calls = []
+    monkeypatch.setattr("pipeline.assemble_video", lambda video_path, tts_segments, wd, output_path: calls.append(video_path) or output_path.write_bytes(b"new"))
+
+    run_pipeline(video, resume_dir=work_dir, step="assemble")
+
+    assert calls == [video]
+    assert _assemble_settings_current(work_dir, video)
+
+
+def test_full_pipeline_reassembles_when_burn_setting_changes(monkeypatch, tmp_path):
+    import pipeline
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    for step in ("extract", "detect", "asr", "silence", "vlm", "script", "tts", "assemble"):
+        (work_dir / f".step_{step}.done").write_text("ok")
+    (work_dir / "scenes.json").write_text('[{"start":0.0,"end":3.0}]')
+    (work_dir / "asr_result.json").write_text('[]')
+    (work_dir / "silence_periods.json").write_text('[{"start":0.0,"end":3.0,"duration":3.0,"has_speech":false}]')
+    (work_dir / "vlm_analysis.json").write_text('[{"scene_id":0,"start":0.0,"end":3.0,"description":"测试"}]')
+    (work_dir / "narration.json").write_text('[{"start":0.0,"end":2.0,"narration":"测试。"}]')
+    (work_dir / "tts_meta.json").write_text('{"segments":[{"start":0,"end":2,"narration":"测试。","audio_path":"n.wav","audio_duration":1}],"engine":"say"}')
+    output = work_dir / "output.mp4"
+    output.write_bytes(b"old")
+
+    monkeypatch.setitem(CONFIG, "api_key", "")
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", False)
+    pipeline._write_assemble_meta(work_dir, video)
+    monkeypatch.setitem(CONFIG, "burn_subtitles", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline._ffmpeg_has_filter", lambda filter_name: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 3.0)
+    calls = []
+    monkeypatch.setattr("pipeline.assemble_video", lambda video_path, tts_segments, wd, output_path: calls.append(video_path) or output_path.write_bytes(b"new"))
+
+    run_pipeline(video, resume_dir=work_dir)
+
+    assert calls == [video]
+    assert _assemble_settings_current(work_dir, video)
 
 
 def test_build_edited_source_video_uses_ffmpeg_concat(monkeypatch, tmp_path):

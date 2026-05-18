@@ -135,6 +135,16 @@ python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
 
 cut 模式下同时写 `work_dir/clip_plan.json` 和 `work_dir/narration.json`，时间戳都用原视频时间。CLI 会生成 `edited_source.mp4`，把解说映射到 `narration_mapped.json`，再继续 TTS/组装。
 
+如果要把解说字幕直接压制进最终视频，在续跑/组装时加 `--burn-subtitles`：
+
+```bash
+python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
+  --resume work_dir \
+  --burn-subtitles
+```
+
+CLI 仍会导出 `subtitles.srt` 作为外挂字幕；压制时会额外生成内部使用的 `subtitles.ass`，使用底部居中的可读样式，并对视频重编码。当前 `ffmpeg` 需要带 `subtitles`/libass 滤镜。
+
 ### Doctor 自检
 
 ```bash
@@ -149,6 +159,7 @@ python3 skills/video-recap/scripts/video_recap.py --doctor
 
 - `recap_<video>.mp4`：最终解说视频
 - `work_dir/subtitles.srt`：生成字幕
+- `work_dir/subtitles.ass`：使用 `--burn-subtitles` 时生成的压制字幕文件
 - `work_dir/agent_narration_brief.md`：给 Agent 写解说词用的场景与时长 brief
 - `work_dir/narration.json`：解说词稿
 - `work_dir/clip_plan.json`：cut 模式下要保留的原片片段

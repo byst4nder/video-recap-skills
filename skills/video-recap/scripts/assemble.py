@@ -7,6 +7,9 @@ from config import CONFIG
 from common import log, run_cmd, get_video_duration
 from tts import _get_audio_duration
 
+SUBTITLE_RENDER_VERSION = 1
+
+
 def _seconds_to_srt_time(seconds):
     """将秒数转为 SRT 时间格式 HH:MM:SS,mmm"""
     h = int(seconds // 3600)
@@ -16,7 +19,51 @@ def _seconds_to_srt_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def _wrap_srt_text(text, max_chars=20):
+def _seconds_to_ass_time(seconds):
+    """将秒数转为 ASS 时间格式 H:MM:SS.cc"""
+    centiseconds = int(round(float(seconds) * 100))
+    h = centiseconds // 360000
+    centiseconds %= 360000
+    m = centiseconds // 6000
+    centiseconds %= 6000
+    s = centiseconds // 100
+    cs = centiseconds % 100
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _subtitle_style_config():
+    """Return the internal default burn-in subtitle style."""
+    return {
+        "font_name": CONFIG.get("subtitle_font_name", "Arial"),
+        "font_size": CONFIG.get("subtitle_font_size", 42),
+        "primary_color": CONFIG.get("subtitle_primary_color", "&H00FFFFFF"),
+        "outline_color": CONFIG.get("subtitle_outline_color", "&H00000000"),
+        "outline": CONFIG.get("subtitle_outline", 2),
+        "shadow": CONFIG.get("subtitle_shadow", 1),
+        "alignment": CONFIG.get("subtitle_alignment", 2),
+        "margin_l": CONFIG.get("subtitle_margin_l", 40),
+        "margin_r": CONFIG.get("subtitle_margin_r", 40),
+        "margin_v": CONFIG.get("subtitle_margin_v", 48),
+        "max_chars": CONFIG.get("subtitle_max_chars", 20),
+        "play_res_x": CONFIG.get("subtitle_play_res_x", 1280),
+        "play_res_y": CONFIG.get("subtitle_play_res_y", 720),
+    }
+
+
+def assembly_settings_fingerprint():
+    """Settings that affect the rendered video, used by pipeline resume cache."""
+    fingerprint = {
+        "version": SUBTITLE_RENDER_VERSION,
+        "burn_subtitles": bool(CONFIG.get("burn_subtitles", False)),
+        "force_video_reencode": bool(CONFIG.get("force_video_reencode", False)),
+    }
+    if fingerprint["burn_subtitles"]:
+        fingerprint["subtitle_renderer"] = "ass"
+        fingerprint["subtitle_style"] = _subtitle_style_config()
+    return fingerprint
+
+
+def _wrap_subtitle_text(text, max_chars=20, line_break="\n"):
     """将长文本按标点/字数换行，适配字幕显示"""
     if len(text) <= max_chars:
         return text
@@ -37,28 +84,123 @@ def _wrap_srt_text(text, max_chars=20):
     # SRT 最多两行
     if len(lines) > 2:
         lines = [lines[0], "".join(lines[1:])]
-    return "\n".join(lines)
+    return line_break.join(lines)
+
+
+def _wrap_srt_text(text, max_chars=20):
+    return _wrap_subtitle_text(text, max_chars=max_chars, line_break="\n")
+
+
+def _subtitle_entries(narration):
+    """Collect subtitle entries from final TTS segment placement."""
+    entries = []
+    for seg in narration:
+        if not isinstance(seg, dict):
+            continue
+        text = str(seg.get("narration", "")).strip()
+        if not text:
+            continue
+        try:
+            start = float(seg.get("actual_place_start", seg["start"]))
+            end = float(seg.get("actual_place_end", seg["end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end - start < 0.1:
+            continue
+        entries.append({"start": start, "end": end, "text": text})
+    return entries
 
 
 def _generate_srt(narration, work_dir):
     """将解说脚本转为 SRT 字幕文件，使用实际音频放置时间"""
     srt_lines = []
-    idx = 0
-    for seg in narration:
-        start = seg.get("actual_place_start", seg["start"])
-        end = seg.get("actual_place_end", seg["end"])
-        if end - start < 0.1 or not seg.get("narration", "").strip():
-            continue
-        idx += 1
-        start_ts = _seconds_to_srt_time(start)
-        end_ts = _seconds_to_srt_time(end)
+    max_chars = int(CONFIG.get("subtitle_max_chars", 20))
+    for idx, entry in enumerate(_subtitle_entries(narration), start=1):
+        start_ts = _seconds_to_srt_time(entry["start"])
+        end_ts = _seconds_to_srt_time(entry["end"])
         srt_lines.append(str(idx))
         srt_lines.append(f"{start_ts} --> {end_ts}")
-        srt_lines.append(_wrap_srt_text(seg["narration"]))
+        srt_lines.append(_wrap_srt_text(entry["text"], max_chars=max_chars))
         srt_lines.append("")
     srt_path = work_dir / "subtitles.srt"
     srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
     return srt_path
+
+
+def _escape_ass_text(text):
+    """Escape user text for an ASS dialogue Text field."""
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("{", "\\{")
+        .replace("}", "\\}")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\N")
+    )
+
+
+def _generate_ass(narration, work_dir):
+    """Generate an ASS subtitle file for readable hard-sub rendering."""
+    style = _subtitle_style_config()
+    ass_lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        f"PlayResX: {int(style['play_res_x'])}",
+        f"PlayResY: {int(style['play_res_y'])}",
+        "",
+        "[V4+ Styles]",
+        (
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding"
+        ),
+        (
+            "Style: Default,"
+            f"{style['font_name']},{style['font_size']},{style['primary_color']},&H000000FF,"
+            f"{style['outline_color']},&H64000000,0,0,0,0,100,100,0,0,1,"
+            f"{style['outline']},{style['shadow']},{style['alignment']},"
+            f"{style['margin_l']},{style['margin_r']},{style['margin_v']},1"
+        ),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    max_chars = int(style["max_chars"])
+    for entry in _subtitle_entries(narration):
+        text = _wrap_subtitle_text(_escape_ass_text(entry["text"]), max_chars=max_chars, line_break="\\N")
+        ass_lines.append(
+            "Dialogue: 0,"
+            f"{_seconds_to_ass_time(entry['start'])},{_seconds_to_ass_time(entry['end'])},"
+            f"Default,,0,0,0,,{text}"
+        )
+
+    ass_path = work_dir / "subtitles.ass"
+    ass_path.write_text("\n".join(ass_lines) + "\n", encoding="utf-8")
+    return ass_path
+
+
+def _escape_subtitle_filter_path(path):
+    """Escape a path for ffmpeg subtitle/ass video filter arguments."""
+    text = str(path).replace("\\", "/")
+    for raw, escaped in (
+        ("\\", "\\\\"),
+        (":", "\\:"),
+        ("'", "\\'"),
+        (",", "\\,"),
+        ("[", "\\["),
+        ("]", "\\]"),
+    ):
+        text = text.replace(raw, escaped)
+    return text
+
+
+def _subtitle_burn_filter(subtitle_path):
+    """Build the ffmpeg video filter used for hard-sub rendering."""
+    return f"subtitles=filename='{_escape_subtitle_filter_path(subtitle_path)}'"
 
 
 def assemble_video(input_video, tts_segments, work_dir, output_path):
@@ -77,6 +219,10 @@ def assemble_video(input_video, tts_segments, work_dir, output_path):
     # 始终生成 SRT 字幕文件
     srt_path = _generate_srt(tts_segments, work_dir)
     log(f"字幕文件: {srt_path}")
+    ass_path = None
+    if CONFIG.get("burn_subtitles", False):
+        ass_path = _generate_ass(tts_segments, work_dir)
+        log(f"压制字幕文件: {ass_path}")
 
     # 混合原始音频 + 解说音频
     ducking_mode = CONFIG.get("ducking_mode", "fixed")
@@ -211,10 +357,8 @@ def assemble_video(input_video, tts_segments, work_dir, output_path):
         ]
 
     if CONFIG.get("burn_subtitles", False):
-        # ffmpeg subtitles filter 需要转义 : 和 \
-        srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
-        cmd += ["-vf", f"subtitles={srt_escaped}", "-c:v", "libx264", "-crf", "18"]
-        log("烧录字幕（需要重编码）...")
+        cmd += ["-vf", _subtitle_burn_filter(ass_path), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+        log("压制解说字幕（ASS，需要重编码）...")
     elif CONFIG.get("force_video_reencode", False):
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
     else:
@@ -405,4 +549,3 @@ def _build_timed_narration(tts_segments, output_wav, video_duration, work_dir):
         wf.writeframes(bytes(buffer))
 
     log(f"解说音轨: {video_duration:.1f}s, {len(tts_segments)} 段")
-

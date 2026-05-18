@@ -67,6 +67,12 @@ python3 scripts/video_recap.py <video> --edit-mode cut --target-duration 10m --t
 python3 scripts/video_recap.py <video> --resume work_dir
 ```
 
+需要把解说字幕压制进视频时：
+
+```bash
+python3 scripts/video_recap.py <video> --resume work_dir --burn-subtitles
+```
+
 ⚠️ 改完 narration.json 后如需重配音，删 `tts_segments/`、`.step_tts.done`、`.step_assemble.done` 和 `tts_meta.json`。cut 模式下 CLI 会自动检测 `clip_plan.json` / `narration.json` 是否比剪辑产物更新，并重建映射。
 
 ## 自检
@@ -79,6 +85,7 @@ python3 scripts/video_recap.py --doctor
 
 - `recap_<video>.mp4` — 最终视频
 - `subtitles.srt` — 字幕
+- `subtitles.ass` — `--burn-subtitles` 时用于压制的字幕
 - `work_dir/agent_narration_brief.md` — 解说词写作 brief
 - `work_dir/narration.json` — Agent 写的解说词
 - `work_dir/clip_plan.json` — cut 模式下 Agent 选择的原片片段

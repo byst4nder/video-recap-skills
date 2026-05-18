@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from config import CONFIG
-from common import log, api_call, get_video_duration
+from common import log, api_call, get_video_duration, run_cmd
 from extract import extract_frames
 from detect import detect_scenes, detect_silence_periods
 from asr import transcribe_audio
@@ -18,7 +18,7 @@ from narration import (
     _align_narration_to_quiet,
 )
 from tts import synthesize_tts
-from assemble import assemble_video
+from assemble import assemble_video, assembly_settings_fingerprint
 from edit import (
     build_edited_source_video,
     load_clip_plan,
@@ -78,6 +78,14 @@ def _load_json_file(path, label):
         raise FileNotFoundError(f"缺少 {label}: {path}") from exc
 
 
+def _ffmpeg_has_filter(filter_name):
+    result = run_cmd(["ffmpeg", "-hide_banner", "-filters"])
+    if result.returncode != 0:
+        return False
+    marker = f" {filter_name} "
+    return any(marker in line for line in result.stdout.splitlines())
+
+
 def _cut_mode_enabled():
     return CONFIG.get("edit_mode", "full") == "cut"
 
@@ -92,6 +100,7 @@ def _persist_run_settings(work_dir):
         "target_duration": CONFIG.get("target_duration", ""),
         "clip_padding": CONFIG.get("clip_padding", 0.0),
         "allow_clip_overlap": CONFIG.get("allow_clip_overlap", False),
+        "burn_subtitles": CONFIG.get("burn_subtitles", False),
     }
     _run_settings_path(work_dir).write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return settings
@@ -108,9 +117,23 @@ def _load_run_settings(work_dir):
         return {}
     if not isinstance(settings, dict):
         return {}
-    for key in ("edit_mode", "target_duration", "clip_padding", "allow_clip_overlap"):
+    for key in ("edit_mode", "target_duration", "clip_padding", "allow_clip_overlap", "burn_subtitles"):
         if key in settings and settings[key] is not None:
             CONFIG[key] = settings[key]
+    return settings
+
+
+def _merge_run_settings(work_dir):
+    """Load persisted settings, but keep explicit one-way CLI enables."""
+    explicit_enables = {
+        "burn_subtitles": bool(CONFIG.get("burn_subtitles", False)),
+        "allow_clip_overlap": bool(CONFIG.get("allow_clip_overlap", False)),
+    }
+    settings = _load_run_settings(work_dir)
+    for key, enabled in explicit_enables.items():
+        if enabled:
+            CONFIG[key] = True
+            settings[key] = True
     return settings
 
 
@@ -128,6 +151,8 @@ def _resume_command(cli_path, video_path, work_dir):
             parts.extend(["--clip-padding", f"{clip_padding:g}"])
         if CONFIG.get("allow_clip_overlap", False):
             parts.append("--allow-clip-overlap")
+    if CONFIG.get("burn_subtitles", False):
+        parts.append("--burn-subtitles")
     return " ".join(shlex.quote(part) for part in parts)
 
 
@@ -236,6 +261,37 @@ def _artifact_current(output_path, source_paths):
     return output_path.stat().st_mtime >= max(path.stat().st_mtime for path in existing_sources)
 
 
+def _assemble_meta_path(work_dir):
+    return work_dir / "assemble_meta.json"
+
+
+def _write_assemble_meta(work_dir, input_video):
+    meta = {
+        "input_video": str(input_video),
+        "settings": assembly_settings_fingerprint(),
+    }
+    _assemble_meta_path(work_dir).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def _assemble_settings_current(work_dir, input_video):
+    path = _assemble_meta_path(work_dir)
+    if not path.exists():
+        return False
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return (
+        meta.get("input_video") == str(input_video)
+        and meta.get("settings") == assembly_settings_fingerprint()
+    )
+
+
+def _assemble_artifact_current(work_dir, output_path, source_paths, input_video):
+    return _artifact_current(output_path, source_paths) and _assemble_settings_current(work_dir, input_video)
+
+
 def _clear_tts_cache(work_dir):
     shutil.rmtree(work_dir / "tts_segments", ignore_errors=True)
     for path in (work_dir / "tts_meta.json", work_dir / ".step_tts.done"):
@@ -298,8 +354,14 @@ def _run_cached_tail_step(video_path, work_dir, step, style, output_dir):
 
     output_path = work_dir / "output.mp4"
     assembly_input = _tail_video_path(video_path, work_dir)
-    assemble_video(assembly_input, tts_segments, work_dir, output_path)
-    _step_done(work_dir, "assemble")
+    if _is_step_done(work_dir, "assemble") and _assemble_artifact_current(
+        work_dir, output_path, [tts_meta, assembly_input], assembly_input
+    ):
+        log("跳过视频组装（已存在）")
+    else:
+        assemble_video(assembly_input, tts_segments, work_dir, output_path)
+        _write_assemble_meta(work_dir, assembly_input)
+        _step_done(work_dir, "assemble")
 
     final_output = Path(output_dir) / f"recap_{video_path.stem}.mp4" if output_dir else work_dir.parent / f"recap_{video_path.stem}.mp4"
     if final_output != output_path:
@@ -318,9 +380,6 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
     if not video_path.exists():
         raise FileNotFoundError(f"视频不存在: {video_path}")
 
-    if not check_prerequisites(skip_asr=skip_asr):
-        sys.exit(1)
-
     # 工作目录
     if resume_dir:
         work_dir = Path(resume_dir)
@@ -331,9 +390,16 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
 
     work_dir.mkdir(exist_ok=True)
     if resume_dir:
-        _load_run_settings(work_dir)
+        _merge_run_settings(work_dir)
     else:
         _persist_run_settings(work_dir)
+    if not check_prerequisites(skip_asr=skip_asr):
+        sys.exit(1)
+    if CONFIG.get("burn_subtitles", False) and not _ffmpeg_has_filter("subtitles"):
+        raise RuntimeError(
+            "当前 ffmpeg 未启用 subtitles/libass 滤镜，无法压制字幕；"
+            "请安装带 libass/subtitles 支持的 ffmpeg，或去掉 --burn-subtitles"
+        )
     log(f"工作目录: {work_dir}")
     log(f"输入视频: {video_path}")
     log(f"成片模式: {CONFIG.get('edit_mode', 'full')}")
@@ -505,6 +571,7 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
             "brief": str(brief_path),
             "next_step": next_step,
             "edit_mode": CONFIG.get("edit_mode", "full"),
+            "resume_command": _resume_command(cli_path, video_path, work_dir),
         }
 
     if cut_mode:
@@ -541,11 +608,14 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
 
     # Step 7: 组装
     output_path = work_dir / "output.mp4"
-    if _is_step_done(work_dir, "assemble") and _artifact_current(output_path, [tts_meta, assembly_video_path]):
+    if _is_step_done(work_dir, "assemble") and _assemble_artifact_current(
+        work_dir, output_path, [tts_meta, assembly_video_path], assembly_video_path
+    ):
         log("跳过视频组装（已存在）")
     else:
         t0 = time.time()
         assemble_video(assembly_video_path, tts_segments, work_dir, output_path)
+        _write_assemble_meta(work_dir, assembly_video_path)
         _step_done(work_dir, "assemble")
         log(f"[{time.time()-t0:.1f}s] 视频组装完成")
 

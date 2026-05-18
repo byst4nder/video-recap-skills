@@ -135,6 +135,16 @@ python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
 
 In cut mode, write both `work_dir/clip_plan.json` and `work_dir/narration.json` using original source timestamps. The CLI builds `edited_source.mp4`, maps narration into `narration_mapped.json`, then resumes TTS/assembly.
 
+To hardcode the narration subtitles into the final video, add `--burn-subtitles` on the resume/assembly run:
+
+```bash
+python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
+  --resume work_dir \
+  --burn-subtitles
+```
+
+The CLI still exports `subtitles.srt` as a sidecar file. Burn-in uses an internal `subtitles.ass` renderer with readable bottom subtitles and re-encodes the video. Your `ffmpeg` build must include the `subtitles`/libass filter.
+
 ### Doctor check
 
 ```bash
@@ -149,6 +159,7 @@ Typical outputs:
 
 - `recap_<video>.mp4` — final recap video
 - `work_dir/subtitles.srt` — generated subtitles
+- `work_dir/subtitles.ass` — internal burn-in subtitle file when `--burn-subtitles` is used
 - `work_dir/agent_narration_brief.md` — timing and scene brief for the agent
 - `work_dir/narration.json` — recap narration script
 - `work_dir/clip_plan.json` — source ranges to keep when `--edit-mode cut` is used

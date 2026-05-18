@@ -110,6 +110,19 @@ CONFIG = {
     "skip_narrative_analysis": True,  # 跳过叙事结构分析（省57-130s，对质量影响极小）
     "burn_subtitles": False,  # 烧录字幕到视频（需要重编码）
     "force_video_reencode": env_bool("FORCE_VIDEO_REENCODE", False),  # 组装时重编码视频，修复部分容器时间戳问题
+    "subtitle_font_name": os.environ.get("SUBTITLE_FONT_NAME", "Arial"),
+    "subtitle_font_size": env_int("SUBTITLE_FONT_SIZE", 42, minimum=8),
+    "subtitle_primary_color": os.environ.get("SUBTITLE_PRIMARY_COLOR", "&H00FFFFFF"),
+    "subtitle_outline_color": os.environ.get("SUBTITLE_OUTLINE_COLOR", "&H00000000"),
+    "subtitle_outline": env_float("SUBTITLE_OUTLINE", 2.0, minimum=0.0),
+    "subtitle_shadow": env_float("SUBTITLE_SHADOW", 1.0, minimum=0.0),
+    "subtitle_margin_v": env_int("SUBTITLE_MARGIN_V", 48, minimum=0),
+    "subtitle_margin_l": env_int("SUBTITLE_MARGIN_L", 40, minimum=0),
+    "subtitle_margin_r": env_int("SUBTITLE_MARGIN_R", 40, minimum=0),
+    "subtitle_alignment": env_int("SUBTITLE_ALIGNMENT", 2, minimum=1),
+    "subtitle_max_chars": env_int("SUBTITLE_MAX_CHARS", 20, minimum=6),
+    "subtitle_play_res_x": env_int("SUBTITLE_PLAY_RES_X", 1280, minimum=1),
+    "subtitle_play_res_y": env_int("SUBTITLE_PLAY_RES_Y", 720, minimum=1),
 }
 
 SCRIPT_DIR = Path(__file__).parent
