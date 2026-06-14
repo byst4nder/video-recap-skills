@@ -1,13 +1,14 @@
-# video-recap
+# video-recap-skills
 
 [中文说明](README.zh-CN.md) · English
 
-> A Claude Code skill for turning videos into recap videos with story research, ASR+VLM scene understanding, TTS voiceover, subtitles, and dynamic audio mixing.
+> A Claude Code **plugin** that turns a video into a Chinese-narration recap — story research, ASR + VLM scene understanding, agent-written narration, TTS voiceover, subtitles, and dynamic audio mixing — built as a bundle of small, independent skills. **Runs on ffmpeg + one Xiaomi MiMo API key.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-purple)
-![TTS](https://img.shields.io/badge/TTS-MiMo--first-green)
+![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple)
+![Powered by MiMo](https://img.shields.io/badge/AI-Xiaomi%20MiMo-green)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Cross-platform](https://img.shields.io/badge/macOS%20%7C%20Linux%20%7C%20Windows-supported-informational)
 
 ## Demo
 
@@ -15,221 +16,212 @@ https://github.com/user-attachments/assets/92698ec6-0d23-4f9f-8825-c3684ef57aff
 
 ## What is it?
 
-`video-recap` is a Claude Code skill that helps an agent create short-form recap videos from existing video files.
+`video-recap-skills` helps an agent create short-form narrated recap videos from existing video files.
+It is a **bundle of five independent skills + a thin orchestrator**. Each stage is a self-contained
+skill (its own code, no shared modules); they communicate only through JSON/MP4 artifacts in a
+shared `work_dir`. The agent writes the narration; the tooling does the deterministic media work.
+
+**Easy to run:** the entire pipeline — speech-to-text, vision understanding, and text-to-speech —
+runs on a single [Xiaomi MiMo](https://platform.xiaomimimo.com) API key plus `ffmpeg`. No GPU,
+no local model downloads, no extra services. Works on macOS, Linux, and Windows.
 
 ```mermaid
 flowchart TB
-    input([Input video]) --> prep[Prepare artifacts]
-    context[[Story research / context]] -.-> brief
+    input([Input video]) --> understand
+    context[[Story research / context]] -.-> script
 
-    subgraph understand[1. Understand the video]
+    subgraph understand[video-understanding]
         direction LR
-        scene[Scene cuts]
-        asr[ASR dialogue]
-        vlm[VLM frame facts]
+        scene[Scene cuts] --- asr[ASR dialogue] --- vlm[VLM frame facts] --- brief[Brief + index]
     end
 
-    subgraph write[2. Plan the script]
+    subgraph script[video-script · the agent writes narration.json]
         direction LR
-        brief[Timing brief]
-        script[narration.json]
+        write[Write] --- review[Review gate] --- validate[Validate timing]
     end
 
-    subgraph produce[3. Produce the recap]
+    cut[video-cut · optional, cut mode]
+    subgraph produce[produce]
         direction LR
-        tts[MiMo-first TTS voiceover]
-        mix[Subtitles + audio ducking]
-        output([Recap video])
+        voice[video-voiceover · MiMo TTS] --- assemble[video-assemble · mux + duck + subtitles]
     end
+    output([Recap video])
 
-    prep --> scene
-    prep --> asr
-    prep --> vlm
-    scene --> brief
-    asr --> brief
-    vlm --> brief
-    brief --> script
-    script --> tts
-    script --> mix
-    tts --> mix
-    mix --> output
+    understand --> script
+    script --> cut --> produce
+    script --> produce
+    produce --> output
 
-    classDef source fill:#eef6ff,stroke:#4f86c6,stroke-width:1px,color:#1f2937;
-    classDef analysis fill:#fff7e6,stroke:#d99100,stroke-width:1px,color:#1f2937;
-    classDef scriptStyle fill:#f3ecff,stroke:#7c3aed,stroke-width:1px,color:#1f2937;
-    classDef output fill:#ecfdf3,stroke:#16a34a,stroke-width:1px,color:#1f2937;
-    class input,context,prep source;
-    class scene,asr,vlm analysis;
-    class brief,script scriptStyle;
-    class tts,mix,output output;
+    classDef s fill:#eef6ff,stroke:#4f86c6,color:#1f2937;
+    classDef w fill:#f3ecff,stroke:#7c3aed,color:#1f2937;
+    classDef p fill:#ecfdf3,stroke:#16a34a,color:#1f2937;
+    class input,context,understand s;
+    class script,cut w;
+    class produce,output p;
 ```
+
+## Architecture — the skill bundle
+
+`video-recap` is the user-facing **orchestrator**; it chains the stage skills (each invoked as a
+subprocess) and pauses for the agent to write the narration. The four pure-tool stages are hidden
+(`user-invocable: false`); `video-recap` and `video-script` are the ones you invoke.
+
+| Skill | Does | In → Out (the `work_dir` contract) |
+|---|---|---|
+| **video-understanding** | scene detect · frame extract · ASR (`mimo-v2.5-asr`) · VLM (`mimo-v2.5`) · fuse timeline · build brief (+ optional `--consolidate` index) | `video` → `scenes / asr_result / vlm_analysis / silence_periods / timeline_fusion / agent_narration_brief.md` |
+| **video-script** | writing rules (SKILL.md) + review (LLM-as-judge) + lint/validate | `brief + index` → `narration.json` |
+| **video-cut** | clip plan → cut source + remap narration (cut mode) | `clip_plan.json + video` → `edited_source.mp4 + narration_mapped.json` |
+| **video-voiceover** | synthesize narration audio (MiMo TTS, `mimo-v2.5-tts`) | `narration.json` → `tts_segments/ + tts_meta.json` |
+| **video-assemble** | mux · duck original audio · render subtitles | `video + tts_meta` → `recap_<name>.mp4 + subtitles.srt/.ass` |
+| **video-recap** | orchestrator + `--doctor` | `video` → `recap_<name>.mp4` |
+
+Each skill ships its own `lib.py` (merged config + utils) — there is **no shared code file**; the
+JSON artifacts are the only interface. See each skill's `SKILL.md` for its full options.
 
 ## Why use it?
 
-- **Story research before writing** — pull plot, characters, relationships, and world context into the brief so the recap is not just visual guesswork.
-- **ASR + VLM understanding** — combine dialogue transcripts with scene cuts, VLM descriptions, and frame-level facts.
-- **Timing-aware writing brief** — `agent_narration_brief.md` includes quiet windows, dialogue overlap, scene timing, and word budgets.
-- **Original audio stays alive** — voiceover is mixed with ducking instead of replacing dialogue, ambience, and rhythm.
-- **Script-first reruns** — edit `narration.json`, then rerun TTS/assembly without redoing video analysis.
-- **Cut-style recaps** — in `--edit-mode cut`, select source ranges in `clip_plan.json` to turn long videos into shorter narrated edits.
-- **MiMo-first TTS support** — `--tts` supports `auto`, `edge-tts`, and `mimo-tts`; the default `auto` picks MiMo TTS when a MiMo key is configured, otherwise falls back to `edge-tts`.
-- **No-key fallback** — without MiMo configuration, `edge-tts` with `zh-CN-YunxiNeural` remains the fallback.
+- **One key, runs anywhere** — ASR, VLM, and TTS all go through Xiaomi MiMo's OpenAI-compatible API. The only local dependency is `ffmpeg`; no GPU or model files. macOS / Linux / Windows.
+- **Story research before writing** — pull plot, characters, relationships, and world context into the brief so the recap is not visual guesswork.
+- **ASR + VLM understanding** — `mimo-v2.5-asr` dialogue transcripts combined with scene cuts, `mimo-v2.5` VLM descriptions, and frame-level facts.
+- **Optional 整理 / index build-up** — `--consolidate` rolls per-scene VLM into a global character/relationship/plot index; `--consolidate-asr` cleans the transcript (timing preserved).
+- **Quality review gate** — `review.py` grades the draft (hallucination, hook, throughline, density…) as a logged, *advisory* pass; `validate.py` stays the deterministic hard gate.
+- **Original audio stays alive** — voiceover is mixed with ducking instead of replacing dialogue and ambience.
+- **Script-first reruns** — edit `narration.json`, then rerun voiceover/assembly without redoing video analysis.
+- **Cut-style recaps** — `--edit-mode cut` selects source ranges in `clip_plan.json` to turn long videos into shorter narrated edits.
 
 ## Installation
 
-### 1. Install the Claude Code skill
+### 1. Install the plugin
 
 Ask Claude Code:
 
 ```text
-Install this skill: https://github.com/worldwonderer/video-recap
+Install this plugin: https://github.com/worldwonderer/video-recap-skills
 ```
 
-### 2. Install runtime dependencies
+### 2. Install ffmpeg
 
 ```bash
+# macOS
 brew install ffmpeg
-pip3 install edge-tts
+# Debian/Ubuntu
+sudo apt install ffmpeg
+# Windows (choose one)
+choco install ffmpeg   # or: scoop install ffmpeg   |   winget install ffmpeg
 ```
 
-### 3. Configure an OpenAI-compatible API
+Python 3.10+ is the only other requirement — the scripts use the standard library plus `ffmpeg`
+on `PATH` (no `pip install` needed for the pipeline itself).
+
+### 3. Set your MiMo API key
+
+One key powers ASR + VLM + TTS. Keep it in an environment variable, never in the repo.
 
 ```bash
-export OPENAI_API_KEY=your-key
-export OPENAI_API_URL=https://your-api-url/v1
-export OPENAI_MODEL=doubao-seed-2-0-lite-260428
-
-# Recommended when your proxy/provider is sensitive to concurrent VLM requests:
-export VLM_WORKERS=1
-```
-
-### Optional: Xiaomi MiMo
-
-MiMo is supported for optional scene-chunk video understanding and MiMo TTS.
-Keep keys in environment variables only; do not write them into repo files.
-
-Simple mixed-provider setup: use your OpenAI-compatible endpoint (for example Doubao)
-for frame VLM, and one MiMo key for both video understanding and TTS.
-
-```bash
-export OPENAI_API_KEY=your-doubao-or-vlm-key
-export OPENAI_API_URL=https://your-vlm-api-url/v1
-export OPENAI_MODEL=doubao-seed-2-0-lite-260428
-
 export MIMO_API_KEY=your-mimo-key
-export MIMO_MODEL=mimo-v2.5
-
-# Pay-as-you-go sk-* keys default to https://api.xiaomimimo.com/v1.
-# Token Plan tp-* keys default to the China cluster:
-#   https://token-plan-cn.xiaomimimo.com/v1
-# Override when your subscription is in another cluster:
-export MIMO_TOKEN_PLAN_CLUSTER=cn   # cn | sgp | ams
-# or set the exact base URL:
-# export MIMO_API_URL=https://token-plan-cn.xiaomimimo.com/v1
 ```
 
-MiMo video understanding is scene-chunk only: ffmpeg `scdet` finds scene
-boundaries, each local chunk is cut to MP4, encoded as a `data:video/mp4;base64,...`
-`video_url`, and sent to MiMo. The pipeline always analyzes these local scene
-chunks rather than bypassing segmentation. Keep each chunk under the configured
-base64 limit (default 45 MB safety limit for MiMo's 50 MB base64 cap); reduce
-`MIMO_VIDEO_CHUNK_MAX_SECONDS` or `MIMO_VIDEO_FPS` if a chunk is too large.
+- Pay-as-you-go `sk-*` keys default to `https://api.xiaomimimo.com/v1`.
+- Token-Plan `tp-*` keys auto-route to the Token-Plan cluster (default `cn`):
 
-Advanced routing is optional: `MIMO_API_KEY` / `MIMO_API_URL` feed both MiMo video
-and MiMo TTS by default. Only split the two MiMo routes when needed with
-`MIMO_VIDEO_API_URL` / `MIMO_TTS_API_URL` (and, for different credentials,
-`MIMO_VIDEO_API_KEY` / `MIMO_TTS_API_KEY`).
+```bash
+export MIMO_TOKEN_PLAN_CLUSTER=cn   # cn | sgp | ams
+# or pin the base URL explicitly: export MIMO_API_URL=https://token-plan-cn.xiaomimimo.com/v1
+```
+
+Zero-config otherwise — every overridable env var (models, ASR window, voice, loudness, subtitles…)
+is documented in [`skills/video-recap/references/config-playbook.md`](skills/video-recap/references/config-playbook.md).
+Advanced: split routes per capability with `MIMO_VIDEO_API_KEY` / `MIMO_TTS_API_KEY` / `MIMO_ASR_API_KEY`
+(and the matching `*_API_URL` forms); each falls back to `MIMO_API_KEY` / `MIMO_API_URL`.
 
 ## Quick start
 
-After installing the skill, tell Claude Code:
+After installing, tell Claude Code:
 
 ```text
 Create a recap video for /path/to/video.mp4 using video-recap.
-Prefer MiMo TTS; if no MiMo key is configured, fall back to edge-tts. Context: <show / movie / character background>.
+Context: <show / movie / character background>.
 ```
 
-The pipeline prepares scene, ASR, and visual-analysis artifacts, then pauses with an `agent_narration_brief.md`. The agent writes `narration.json`, and the CLI resumes to synthesize voiceover and assemble the video.
+The orchestrator runs the understanding stage, then **pauses** with an `agent_narration_brief.md`.
+The agent writes `narration.json` (per the **video-script** skill), then you **rerun the same command**
+to resume — validate → (cut) → voiceover → assemble.
 
-If you want to start the first analysis pass manually:
+To drive it manually:
 
 ```bash
-python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
-  --context "show name, characters, or story background"
+# 1. Analyze → pause with the brief
+python3 skills/video-recap/scripts/recap.py /path/to/video.mp4 --work-dir work_dir \
+  --context "show name, characters, or story background" \
+  --consolidate                                 # optional: build the global understanding index
+
+# 2. Read work_dir/agent_narration_brief.md, write work_dir/narration.json
+#    (optional quality pass): python3 skills/video-script/scripts/review.py --work-dir work_dir
+
+# 3. Rerun the SAME command to produce the recap
+python3 skills/video-recap/scripts/recap.py /path/to/video.mp4 --work-dir work_dir
 ```
 
-For a mixed Doubao + MiMo run (Doubao frame VLM, MiMo scene-chunk video context, MiMo TTS):
+**Cut mode** (long video → short narrated edit; target duration is a planning goal):
 
 ```bash
-python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
-  --vlm-model doubao-seed-2-0-lite-260428 \
-  --mimo-video-overview \
-  --mimo-tts-voice 冰糖
+python3 skills/video-recap/scripts/recap.py /path/to/video.mp4 --work-dir work_dir \
+  --edit-mode cut --target-duration 10m
 ```
 
-The command pauses before TTS and prints a `work_dir`. Read `work_dir/agent_narration_brief.md`, write `work_dir/narration.json`, then run the printed resume command.
+Write both `work_dir/clip_plan.json` and `work_dir/narration.json` in original source time; the
+orchestrator builds `edited_source.mp4`, maps narration to `narration_mapped.json`, then resumes.
 
-To validate the agent-written script before TTS, run `--step script` after writing `narration.json`. This writes `work_dir/narration_lint.json` with timing errors and warnings.
-
-For an edited recap that keeps only selected source moments (target duration is a planning goal):
+**Burn subtitles** into the final video (re-encodes; needs an ffmpeg with the `subtitles`/libass filter):
 
 ```bash
-python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
-  --edit-mode cut \
-  --target-duration 10m
+python3 skills/video-recap/scripts/recap.py /path/to/video.mp4 --work-dir work_dir --burn-subtitles
 ```
 
-In cut mode, write both `work_dir/clip_plan.json` and `work_dir/narration.json` using original source timestamps. The CLI builds `edited_source.mp4`, maps narration into `narration_mapped.json`, then resumes TTS/assembly.
+**No dialogue / no key for ASR?** Pass `--skip-asr` to run the pipeline without a transcript.
 
-To hardcode the narration subtitles into the final video, add `--burn-subtitles` on the resume/assembly run:
+**Doctor** (ffmpeg filters, MiMo key, ASR/VLM/TTS config):
 
 ```bash
-python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
-  --resume work_dir \
-  --burn-subtitles
+python3 skills/video-recap/scripts/recap.py --doctor
 ```
-
-The CLI exports `subtitles.srt` from the final `narration.json` and TTS placement. Burn-in uses an internal `subtitles.ass` renderer with readable bottom subtitles and re-encodes the video, so your `ffmpeg` build must include the `subtitles`/libass filter.
-
-### Doctor check
-
-```bash
-python3 skills/video-recap/scripts/video_recap.py --doctor
-```
-
-Use `--doctor-tts-smoke` when you also want a short fallback `edge-tts` synthesis check. The doctor also reports ffmpeg subtitle-filter support, ASR path/model readiness, normalized API configuration, and the default TTS setup.
 
 ## Output
 
-Typical outputs:
+- `recap_<video>.mp4` — final recap video · `subtitles.srt` (+ `subtitles.ass` with `--burn-subtitles`)
+- `work_dir/agent_narration_brief.md` — timing + scene brief for the agent
+- `work_dir/narration.json` — the recap narration script · `work_dir/narration_lint.json` — timing diagnostics
+- `work_dir/narration_review.md` — optional review findings (advisory)
+- `work_dir/vlm_analysis.json`, `asr_result.json`, `silence_periods.json`, `timeline_fusion.json` — understanding artifacts
+- `work_dir/understanding_index.json` / `asr_clean.json` — optional `--consolidate` outputs
+- `work_dir/clip_plan.json`, `edited_source.mp4`, `narration_mapped.json` — cut-mode artifacts
+- `work_dir/mimo_video_overview.json` — optional MiMo scene-chunk understanding (`--mimo-video-overview`)
+- `work_dir/tts_segments/`, `tts_meta.json` — TTS audio + placement
 
-- `recap_<video>.mp4` — final recap video
-- `work_dir/subtitles.srt` — voiceover/narration subtitles generated from final TTS placement
-- `work_dir/subtitles.ass` — internal narration subtitle file used for burn-in when `--burn-subtitles` is enabled
-- `work_dir/agent_narration_brief.md` — timing and scene brief for the agent
-- `work_dir/narration.json` — recap narration script
-- `work_dir/narration_lint.json` — script timing/preflight diagnostics from `--step script` or resume validation
-- `work_dir/clip_plan.json` — source ranges to keep when `--edit-mode cut` is used
-- `work_dir/edited_source.mp4` — concatenated short source video in cut mode
-- `work_dir/narration_mapped.json` — narration mapped from source time to edited-output time
-- `work_dir/vlm_analysis.json` — scene-level visual analysis
-- `work_dir/mimo_video_overview.json` — optional MiMo scene-chunk video-understanding artifact
-- `work_dir/asr_result.json` — ASR result when available; used as recap context
-- `work_dir/tts_segments/` — generated TTS audio segments
+## Development
+
+Each skill ships its own `lib.py`, so tests run **one process per skill** (a plain `pytest tests/`
+would collide on the `lib` module name):
+
+```bash
+bash scripts/test.sh                 # all skills (or: bash scripts/test.sh script)
+# Windows (no bash): run each group, e.g. python -m pytest tests/script
+ruff check skills tests              # lint
+python3 skills/video-recap/scripts/recap.py --doctor   # runtime check
+```
+
+Tests live in `tests/<skill>/`. CI runs the same checks (`.github/workflows/skill-validate.yml`).
 
 ## Useful references
 
-- [Skill contract](skills/video-recap/SKILL.md)
-- [Agent workflow](skills/video-recap/references/agent-mode-workflow.md)
-- [Parameters](skills/video-recap/references/parameters.md)
-- [Prompt templates](skills/video-recap/references/prompt-templates.md)
-- [Resume and partial reruns](skills/video-recap/references/pipeline-resume.md)
-- [Data schema](skills/video-recap/references/data-schema.md)
+- Per-skill contracts: each `skills/<skill>/SKILL.md` (video-script's SKILL.md carries the writing rules)
+- [Data schema](skills/video-recap/references/data-schema.md) · [Config playbook](skills/video-recap/references/config-playbook.md)
+- [Background research guide](skills/video-understanding/references/research-guide.md) · [VLM prompt templates](skills/video-understanding/references/prompt-templates.md)
 
 ## Acknowledgements
 
+- [Xiaomi MiMo](https://platform.xiaomimimo.com) — ASR (`mimo-v2.5-asr`), VLM (`mimo-v2.5`), and TTS (`mimo-v2.5-tts`)
 - [linux.do](https://linux.do)
-- [qwen3-asr-rs](https://github.com/alan890104/qwen3-asr-rs)
 
 ## License
 
