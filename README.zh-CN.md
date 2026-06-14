@@ -2,7 +2,7 @@
 
 中文说明 · [English](README.md)
 
-> 把视频做成中文解说 recap 的 Claude Code 插件。一条流水线串起背景调研、ASR + VLM 场景理解、Agent 写解说词、TTS 配音、字幕和动态混音，由一组小而独立的 skill 拼起来。跑起来只要 ffmpeg 和一个小米 MiMo 的 API Key。
+把视频做成中文解说 recap 的 Claude Code 插件。一条流水线串起背景调研、ASR + VLM 场景理解、Agent 写解说词、TTS 配音、字幕和动态混音，由一组小而独立的 skill 拼起来。跑起来只要 ffmpeg 和一个小米 MiMo 的 API Key。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple)
@@ -188,19 +188,6 @@ python3 skills/video-recap/scripts/recap.py --doctor
 - `work_dir/clip_plan.json`、`edited_source.mp4`、`narration_mapped.json`：剪辑模式产物
 - `work_dir/mimo_video_overview.json`：MiMo 分片理解（`--mimo-video-overview`，可选）
 - `work_dir/tts_segments/`、`tts_meta.json`：TTS 音频和放置信息
-
-## 开发
-
-每个 skill 自带 `lib.py`，所以测试要一个 skill 开一个进程跑（直接 `pytest tests/` 会因为 `lib` 模块同名而冲突）：
-
-```bash
-bash scripts/test.sh                 # 全部（或：bash scripts/test.sh script）
-# Windows 没有 bash，就逐组跑，比如 python -m pytest tests/script
-ruff check skills tests              # lint
-python3 skills/video-recap/scripts/recap.py --doctor   # 运行时自检
-```
-
-测试在 `tests/<skill>/` 下，CI 跑的是同一套检查（`.github/workflows/skill-validate.yml`）。
 
 ## 参考文档
 

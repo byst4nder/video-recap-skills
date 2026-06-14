@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md) · English
 
-> A Claude Code plugin that turns a video into a Chinese-narration recap. One pipeline runs background research, ASR + VLM scene understanding, agent-written narration, TTS voiceover, subtitles, and audio mixing, built from a set of small, independent skills. All it needs to run is ffmpeg and one Xiaomi MiMo API key.
+A Claude Code plugin that turns a video into a Chinese-narration recap. One pipeline runs background research, ASR + VLM scene understanding, agent-written narration, TTS voiceover, subtitles, and audio mixing, built from a set of small, independent skills. All it needs to run is ffmpeg and one Xiaomi MiMo API key.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple)
@@ -188,19 +188,6 @@ python3 skills/video-recap/scripts/recap.py --doctor
 - `work_dir/clip_plan.json`, `edited_source.mp4`, `narration_mapped.json`: cut-mode artifacts
 - `work_dir/mimo_video_overview.json`: MiMo scene-chunk understanding (`--mimo-video-overview`, optional)
 - `work_dir/tts_segments/`, `tts_meta.json`: TTS audio and placement
-
-## Development
-
-Each skill ships its own `lib.py`, so tests run one process per skill (a plain `pytest tests/` would collide on the `lib` module name):
-
-```bash
-bash scripts/test.sh                 # all skills (or: bash scripts/test.sh script)
-# Windows has no bash, so run groups one at a time, e.g. python -m pytest tests/script
-ruff check skills tests              # lint
-python3 skills/video-recap/scripts/recap.py --doctor   # runtime check
-```
-
-Tests live in `tests/<skill>/`. CI runs the same checks (`.github/workflows/skill-validate.yml`).
 
 ## References
 
