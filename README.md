@@ -8,13 +8,13 @@
 
 中文 · [English](README.en.md)
 
-**把任何视频做成中文解说 recap——在 Claude Code 里一句话搞定。** 本地只要 `ffmpeg` 和一个小米 MiMo 的 API Key，不要 GPU、不下模型。
+**把任何视频做成中文解说 recap——在 Claude Code 里一句话搞定。** 本地只要 `ffmpeg` 和一个小米 MiMo 的 API Key，不要 GPU、不用下载模型。
 
 ## 演示
 
 https://github.com/user-attachments/assets/92698ec6-0d23-4f9f-8825-c3684ef57aff
 
-成片之外，还能一键导出**剪映草稿**接着手动精修——原片片段、解说、BGM、字幕各成一轨，连 ducking 都是可调的音量关键帧：
+成片之外，还能一键导出**剪映草稿**接着手动精修——原片片段、解说、BGM、字幕各成一轨：
 
 ![导出的剪映草稿：原片片段、解说、BGM、字幕，各自独立可编辑](docs/jianying-export.png)
 
@@ -35,9 +35,9 @@ flowchart LR
 
 ## 为什么用它
 
-- **一个 key 跑全程。** ASR、VLM、TTS 全走[小米 MiMo](https://platform.xiaomimimo.com)，本地只装 `ffmpeg`——不要 GPU、不下模型、不起服务，三平台都能跑。
-- **先调研再分析。** 先把剧情人物查清楚写进 `background_research.json`，VLM 读画面时能叫出人名，而不是满屏「黑衣男子」。
-- **原声不丢，动态混音。** 解说压低原声后混进去；句子间隙自动让原声和 BGM 顶上来，不留死气。
+- **一个 key 跑全程。** ASR、VLM、TTS 全走[小米 MiMo](https://platform.xiaomimimo.com)，本地只装 `ffmpeg`。
+- **先调研再分析。** 先把剧情人物查清楚写进 `background_research.json`。
+- **原声不丢，动态混音。** 解说压低原声后混进去；句子间隙自动让原声和 BGM 顶上来。
 - **能剪、能审。** `--edit-mode cut` 把长视频压成更短的解说剪辑；出稿前一道 LLM 评审挑幻觉、钩子、主线的毛病。
 - **接着在剪映里改。** 可选导出多轨剪映草稿；核心渲染只靠 `ffmpeg`，不装剪映也照常出片。
 
@@ -70,7 +70,7 @@ export MIMO_TOKEN_PLAN_CLUSTER=cn
 
 ## 怎么用
 
-把视频丢给它，顺手给点剧情背景就行：
+把视频丢给它，顺手给点视频背景：
 
 ```text
 给 /path/to/video.mp4 做个解说。这是《庆余年》第一集，主角是范闲。
