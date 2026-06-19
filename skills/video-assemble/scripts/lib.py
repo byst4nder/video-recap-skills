@@ -164,14 +164,18 @@ CONFIG = {
     "mimo_tts_style_source": "env" if os.environ.get("MIMO_TTS_STYLE") else "default",
     "mimo_media_resolution": os.environ.get("MIMO_MEDIA_RESOLUTION", "default"),
     "mimo_media_resolution_source": "env" if os.environ.get("MIMO_MEDIA_RESOLUTION") else "default",
-    "mimo_video_overview": env_bool("MIMO_VIDEO_OVERVIEW", False),
+    "mimo_video_overview": env_bool("MIMO_VIDEO_OVERVIEW", False),  # opt-in (--mimo-video-overview / =1); when on it becomes the PRIMARY per-scene description, frames stay the anchor/fallback
     "mimo_video_overview_source": "env" if os.environ.get("MIMO_VIDEO_OVERVIEW") else "default",
-    "mimo_video_fps": env_float("MIMO_VIDEO_FPS", 2.0, minimum=0.1),
+    "mimo_video_fps": env_float("MIMO_VIDEO_FPS", 3.0, minimum=0.1),
     "mimo_video_fps_source": "env" if os.environ.get("MIMO_VIDEO_FPS") else "default",
     "mimo_video_chunk_max_seconds": env_float("MIMO_VIDEO_CHUNK_MAX_SECONDS", 20.0, minimum=1.0),
     "mimo_video_chunk_min_seconds": env_float("MIMO_VIDEO_CHUNK_MIN_SECONDS", 1.0, minimum=0.2),
     "mimo_video_chunk_timeout": env_int("MIMO_VIDEO_CHUNK_TIMEOUT", 180, minimum=1),
     "mimo_video_base64_max_mb": env_float("MIMO_VIDEO_BASE64_MAX_MB", 45.0, minimum=1.0),
+    # Per-scene frame VLM sampling — scale frames with scene length instead of a hard cap of 6
+    "vlm_seconds_per_frame": env_float("VLM_SECONDS_PER_FRAME", 4.0, minimum=0.5),
+    "vlm_max_frames": env_int("VLM_MAX_FRAMES", 16, minimum=3),
+    "vlm_max_tokens": env_int("VLM_MAX_TOKENS", 1500, minimum=200),
     "mimo_video_prompt": os.environ.get(
         "MIMO_VIDEO_PROMPT",
         "请用中文分析这个视频分片的主要人物、场景变化、关键动作、情绪走向和剧情冲突，"
@@ -184,6 +188,12 @@ CONFIG = {
     # 生成解说时使用 speech_rate * safety_margin 作为约束
     "speech_rate": 3.5,
     "speech_safety_margin": 0.85,  # 保守系数：TTS 实际语速有 ±20% 波动
+    # Block-coverage lint thresholds — promoted from inline .get() literals to real CONFIG keys (tunable; defaults unchanged)
+    "narration_coverage_target": 0.7,   # aim ~70% narrated:original (7:3)
+    "narration_coverage_min": 0.5,      # below this coverage → under_narrated
+    "narration_block_seconds": 9.0,     # block cadence used to derive target block count
+    "original_block_min_seconds": 2.5,  # a deliberate original-audio gap must be at least this long
+    "narration_block_min_chars": 16,    # below this avg block size → fragmented_beats
     "fade_ms": env_int("FADE_MS", 120, minimum=0),  # 每段 TTS 淡入淡出(ms)；过大会让紧凑的句子一顿一顿，120ms 防爆音又不发闷
     "breath_ms": 250,  # 段间呼吸空间(ms)；block recap 块内连贯、块间留原声呼吸
     # Legacy single-pass cut mapping density fields; current writing uses block coverage controls below.
