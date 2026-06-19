@@ -14,7 +14,7 @@
 
 成片之外，还能一键导出**剪映草稿**手动精修，原片、解说、BGM、字幕各一轨：
 
-<img alt="导出的剪映草稿：原片、解说、BGM、字幕各一轨" src="docs/jianying-export.png" width="70%">
+<img alt="导出的剪映草稿：原片、解说、BGM、字幕各一轨" src="docs/jianying-export.png" width="100%">
 
 ## 这是什么
 
@@ -39,7 +39,7 @@ flowchart LR
 
 ## 安装
 
-**① 装插件**——对 Claude Code 说：
+**① 装插件**——复制到 claude code：
 
 ```text
 安装这个插件：https://github.com/worldwonderer/video-recap-skills
@@ -55,7 +55,7 @@ choco install ffmpeg                        # Windows（或 scoop / winget insta
 
 字幕默认烧进画面，需要带 **libass（`subtitles` 滤镜）** 的 ffmpeg——上面这些包基本都自带。如果你的 ffmpeg 没编 libass，开跑前会立刻报错并提示（也可以加 `--no-burn-subtitles` 输出未遮黑条的 MP4 + `.srt` 外挂字幕）。用 `python3 scripts/recap.py --doctor` 自检。
 
-**③ 配 MiMo API Key**（一个 key 同时驱动 ASR / VLM / TTS，放环境变量、别写进仓库）：
+**③ 配 MiMo API Key**（一个 key 同时驱动 ASR / VLM / TTS）：
 
 ```bash
 export MIMO_API_KEY=your-mimo-key
