@@ -6,13 +6,13 @@
 
 中文 · [English](README.en.md)
 
-**一句话，把视频做成中文解说 recap。** 在 Claude Code 里说一声就开跑，本地只要 `ffmpeg` 加一个小米 MiMo 的 API Key——不用 GPU、不下模型，macOS / Linux / Windows 都能跑。
+**在 claude code 仅需一句话把视频剪辑成解说视频。** ，本地只要 `ffmpeg` 加小米 MiMo Token Plan 的 API Key，不用 GPU、不用下载模型，macOS / Linux / Windows 均可运行。
 
 ## 演示
 
 <video src="https://github.com/user-attachments/assets/aa96bd1d-ce4b-42bd-a7df-439aeb63dd18" width="640" controls></video>
 
-成片之外，还能一键导出**剪映草稿**手动精修——原片、解说、BGM、字幕各一轨：
+成片之外，还能一键导出**剪映草稿**手动精修，原片、解说、BGM、字幕各一轨：
 
 <img alt="导出的剪映草稿：原片、解说、BGM、字幕各一轨" src="docs/jianying-export.png" width="70%">
 
@@ -32,10 +32,10 @@ flowchart LR
 ## 为什么用它
 
 - **一个 key 跑全程。** ASR、VLM、TTS 全走[小米 MiMo](https://platform.xiaomimimo.com)，本地除了 `ffmpeg` 没别的依赖。
-- **该查资料时先查。** 片名/剧情明确或 brief 提示素材偏薄时，把人物关系、剧情背景存进 `background_research.json`，VLM 才更容易认出谁是谁；无网络或信息不足时可跳过，不阻塞生成。
+- **该查资料时先查。** 片名/剧情明确或 brief 提示素材偏薄时，把人物关系、剧情背景存进 `background_research.json`，VLM 才更容易认出谁是谁。
 - **解说成块，原声也成块。** 解说一段段连着讲、整块一次配音，段间留白把精彩原声整段放回满音量——大致七三开。
-- **先剪后配，画面不串。** `--edit-mode cut` 先把长视频剪成成片，再对着成片写解说，时间轴天然对齐；出稿前还有一道 LLM 评审挑幻觉、钩子和主线。
-- **能接着在剪映里改。** 可选导出多轨剪映草稿，原片、解说、BGM、字幕各占一轨；核心渲染只靠 `ffmpeg`，不装剪映照样出片。
+- **先剪后配，画面不串。** `--edit-mode cut` 先把长视频剪成成片，再对着成片写解说，时间轴天然对齐。
+- **能接着在剪映里改。** 可选导出多轨剪映草稿，原片、解说、BGM、字幕各占一轨。
 
 ## 安装
 
@@ -63,7 +63,7 @@ export MIMO_API_KEY=your-mimo-key
 export MIMO_TOKEN_PLAN_CLUSTER=cn
 ```
 
-按量付费的 `sk-*` key 默认走 `https://api.xiaomimimo.com/v1`。其它都有默认值；想分别配 key/URL 或改模型、音色、响度、字幕等，见
+按量付费的 `sk-*` key 默认走 `https://api.xiaomimimo.com/v1`。其它都有默认值；想分别配 key/URL 或改模型、音色、响度、字幕等，可见
 [配置手册](skills/video-recap/references/config-playbook.md)。
 
 ## 怎么用
@@ -74,13 +74,13 @@ export MIMO_TOKEN_PLAN_CLUSTER=cn
 给 /path/to/video.mp4 做个解说。这是《庆余年》第一集，主角是范闲。
 ```
 
-它会分析视频、照背景写解说，产出带字幕的 `recap_<名>.mp4`。想要别的花样，照样一句话：
+它会分析视频、照背景写解说，产出带字幕的 `recap_<名>.mp4`。
 
 ```text
 把 /path/to/long.mp4 剪成十分钟左右的解说短片，字幕压进画面。
 ```
 
-背后是编排器把几个阶段串起来跑，中间停下来让 Agent 写解说（剪辑模式会停两次：先写 `clip_plan.json` 挑片段，剪成成片后再对着成片写 `narration.json`）。第一次跑前先自检环境：
+背后是编排器把几个阶段串起来跑，中间停下来让 Agent 写解说（剪辑模式会停两次：先写 `clip_plan.json` 挑片段，剪成成片后再对着成片写 `narration.json`）。第一次跑前可先自检环境：
 
 ```bash
 python3 skills/video-recap/scripts/recap.py --doctor
@@ -113,7 +113,7 @@ python3 skills/video-recap/scripts/recap.py --doctor
 - `work_dir/user_subtitles.json`：`[{"start": 秒, "end": 秒, "text": "台词"}]`，按**成片**时间轴直接使用；或包一层 `{"timeline": "source", "lines": [...]}` 用**原片**时间轴，系统按剪辑计划自动映射到成片。
 - `work_dir/user_subtitles.srt` / `.ass`：默认按**原片**时间轴解析并映射到成片。
 
-优先级：**你的字幕文件 › Agent 校对的 `original_subtitles.json` › ASR 兜底**。来源准确时按句精确落到对应留白，不再用粗略的中点估时。
+优先级：**你的字幕文件 › Agent 校对的 `original_subtitles.json` › ASR 兜底**。来源准确时按句精确落到对应留白，不再用粗略的估时。
 
 ## 参考文档
 
